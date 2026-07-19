@@ -129,10 +129,11 @@ input[type=file]{display:none}
 </div>
 
 <div class="hud" id="disp">
-  <h3>변위 점검 · 확률적 이상 판정</h3>
+  <h3>변위 통계 스크리닝 (무변위 가설 q-value)</h3>
   <div class="mini">
-    측량 성과 CSV(<b>id,x,y</b> · EPSG:5186)를 업로드하면 기준좌표 대비 변위와
-    <b>이상 확률</b>을 계산합니다. ID: B05-A(코너), B05-E-03(앵커)
+    측량 성과 CSV(<b>id,x,y</b> · EPSG:5186, X=북/Y=동)를 업로드하면 기준좌표 대비 변위와
+    통계적 유의성(q-value)을 계산합니다. <b>q-value는 현장 이상 확률이 아니며 단독 조치 근거가 아닙니다.</b>
+    ID: B05-A(코너), B05-E-03(앵커)
   </div>
   <div style="margin-top:6px">
     <label class="btn" for="csvIn">CSV 업로드</label>
@@ -611,15 +612,28 @@ function showInfo(b){
 }
 
 /* ============ 변위·통계 분석 (FDR 다중검정 + 강체변환 분해) ============ */
-const APP_VER='v3.5 (2026-07-19)';
+const APP_VER='v3.6 (2026-07-19)';
 let dispObjs=[],lastRows=null;
 const DATA0=JSON.parse(JSON.stringify(DATA));
 function updateVer(){
   document.getElementById('ver').textContent=
-    APP_VER+' · 데이터 '+(DATA.dataVersion||'-')+' · 기준 '+(DATA.epoch?DATA.epoch.name+'('+DATA.epoch.date+')':'설계좌표');
+    APP_VER+' · 데이터 '+(DATA.dataVersion||'-')+' · 기준 '+(DATA.epoch?DATA.epoch.name+'('+DATA.epoch.date+')':'설계좌표')
+    +' · 상태 '+(DATA.epoch?'As-built':'설계·추정')
+    +(window._saveOk===false?' · 저장실패!':(window._saveOk?' · 저장확인✓':''));
   document.getElementById('epochLbl').textContent=DATA.epoch?DATA.epoch.name+' ('+DATA.epoch.date+')':'설계좌표(도면)';
 }
-function persist(){try{localStorage.setItem('seokmun_twin_data',JSON.stringify(DATA));}catch(e){}updateVer();}
+function persist(){
+  let ok=false;
+  try{
+    const j=JSON.stringify(DATA);
+    localStorage.setItem('seokmun_twin_data',j);
+    const back=localStorage.getItem('seokmun_twin_data');
+    ok=!!back&&back.length===j.length;
+  }catch(e){ok=false;}
+  window._saveOk=ok;
+  if(!ok)toast('브라우저 저장 실패 — "JSON 내보내기"로 반드시 백업하세요.');
+  updateVer();
+}
 function clearDisp(){dispObjs.forEach(o=>gDisp.remove(o));dispObjs=[];
   document.getElementById('dsum').textContent='';document.getElementById('dgroups').innerHTML='';document.getElementById('dlist').innerHTML='';}
 function bhQ(ps){
@@ -628,39 +642,59 @@ function bhQ(ps){
   for(let k=n-1;k>=0;k--){const pi=idx[k];prev=Math.min(prev,pi[0]*n/(k+1));q[pi[1]]=prev;}
   return q;
 }
-function runDisp(rows){
+function runDisp(rows,rep){
   clearDisp();lastRows=rows;
   const sr=Math.max(0.005,+document.getElementById('sigR').value||0.05);
   const so=Math.max(0.005,+document.getElementById('sigO').value||0.05);
   const sc=Math.sqrt(sr*sr+so*so);
   const tw=+document.getElementById('thrW').value,ta=+document.getElementById('thrA').value,
         vs=+document.getElementById('vscale').value;
+  const designMode=!DATA.epoch;
   const res=[];
   rows.forEach(r=>{const base=BASE[r.id];if(!base)return;
     res.push({id:r.id,dx:r.x-base.x,dy:r.y-base.y,base});});
   if(!res.length){document.getElementById('dsum').textContent='매칭되는 ID가 없습니다.';return;}
-  const seen=new Set();
-  res.forEach(r=>{const k=r.base.x.toFixed(2)+','+r.base.y.toFixed(2);r.ck=k;r.dup=seen.has(k);seen.add(k);});
-  const ures=res.filter(r=>!r.dup);
+  // P0-1: 물리앵커(좌표) 단위 정규화 — 입력 순서 무관, 중복관측 불일치 검출
+  const byPA={};
+  res.forEach(r=>{const k=r.base.x.toFixed(2)+','+r.base.y.toFixed(2);r.ck=k;(byPA[k]=byPA[k]||[]).push(r);});
+  const conflicts=[],ures=[];
+  Object.keys(byPA).sort().forEach(k=>{
+    const g=byPA[k];
+    let mx=0,my=0;g.forEach(r=>{mx+=r.dx;my+=r.dy;});mx/=g.length;my/=g.length;
+    let spread=0;g.forEach(r=>{spread=Math.max(spread,Math.hypot(r.dx-mx,r.dy-my)*2);});
+    if(g.length>1&&spread>0.05){
+      conflicts.push({ids:g.map(r=>r.id),spread});
+      g.forEach(r=>{r.conflict=true;});
+      return;
+    }
+    ures.push({dx:mx,dy:my,base:g[0].base,ck:k,refs:g});
+  });
+  const valid=res.filter(r=>!r.conflict);
   let bx=0,by=0;
   if(ures.length>=8){
-    const mx=ures.map(r=>r.dx).sort((a,b)=>a-b),my=ures.map(r=>r.dy).sort((a,b)=>a-b);
-    bx=mx[Math.floor(mx.length/2)];by=my[Math.floor(my.length/2)];
+    const mxs=ures.map(u=>u.dx).sort((a,b)=>a-b),mys=ures.map(u=>u.dy).sort((a,b)=>a-b);
+    bx=mxs[Math.floor(mxs.length/2)];by=mys[Math.floor(mys.length/2)];
   }
-  res.forEach(r=>{r.cdx=r.dx-bx;r.cdy=r.dy-by;r.d=Math.hypot(r.cdx,r.cdy);
-    r.p=Math.exp(-(r.d*r.d)/(2*sc*sc));});
-  const qs=bhQ(ures.map(r=>r.p));
-  const qmap={};ures.forEach((r,i)=>{qmap[r.ck]=qs[i];});
-  res.forEach(r=>{r.q=qmap[r.ck];
-    r.sig=r.q<0.05;
-    r.lvl=(r.sig&&r.d>=ta)||r.q<0.001?3:((r.sig&&r.d>=tw)||r.q<0.01?2:(r.sig?1:0));});
-  const nO=res.filter(r=>r.lvl===1).length,nW=res.filter(r=>r.lvl===2).length,nA=res.filter(r=>r.lvl===3).length;
-  document.getElementById('dsum').innerHTML=
+  ures.forEach(u=>{u.cdx=u.dx-bx;u.cdy=u.dy-by;u.d=Math.hypot(u.cdx,u.cdy);
+    u.p=Math.exp(-(u.d*u.d)/(2*sc*sc));});
+  const qs=bhQ(ures.map(u=>u.p));
+  ures.forEach((u,i)=>{u.q=qs[i];u.sig=u.q<0.05;
+    u.lvl=(u.sig&&u.d>=ta)||u.q<0.001?3:((u.sig&&u.d>=tw)||u.q<0.01?2:(u.sig?1:0));
+    u.refs.forEach((r,j)=>{r.cdx=u.cdx;r.cdy=u.cdy;r.d=u.d;r.q=u.q;r.sig=u.sig;r.lvl=u.lvl;r.dup=j>0;});
+  });
+  const LV=designMode?['정상','차이(소)','차이(중)','차이(대)']:['정상','관찰','주의','경보'];
+  const nO=ures.filter(u=>u.lvl===1).length,nW=ures.filter(u=>u.lvl===2).length,nA=ures.filter(u=>u.lvl===3).length;
+  let head='';
+  if(rep)head+='입력검증: '+rep.total+'행 · 제외 '+(rep.unreg+rep.dup+rep.out)+'건(미등록 '+rep.unreg+' · 중복 '+rep.dup+' · 범위외 '+rep.out+')'
+    +(rep.swapped?' · <b style="color:var(--warn)">X/Y 축 자동교정 적용</b>':'')+'<br>';
+  if(designMode)head+='<span style="color:var(--warn)">[기준=설계좌표 — 경보 비활성. 아래 결과는 "설계 대비 차이" 참고용이며, As-built Epoch0 설정 후 판정에 사용]</span><br>';
+  if(conflicts.length)head+='<span style="color:var(--alert)">공유 앵커 중복관측 불일치 '+conflicts.length+'건 — 해당 앵커 자동판정 제외(하단 목록)</span><br>';
+  document.getElementById('dsum').innerHTML=head+
     '유니크 '+ures.length+'점(참조 '+res.length+') 대조 · 합성오차 '+sc.toFixed(3)+'m · 전역편차 보정 ('+bx.toFixed(3)+', '+by.toFixed(3)+')m<br>'+
-    '<span style="color:var(--obs)">관찰 '+nO+'</span> · <span style="color:var(--warn)">주의 '+nW+'</span> · <span style="color:var(--alert)">경보 '+nA+'</span>'+
-    ' <span style="color:var(--dim)">(FDR 5% 보정 — 무보정 시 우연 유의 기대 약 '+(ures.length*0.05).toFixed(0)+'점)</span>';
+    '<span style="color:var(--obs)">'+LV[1]+' '+nO+'</span> · <span style="color:var(--warn)">'+LV[2]+' '+nW+'</span> · <span style="color:var(--alert)">'+LV[3]+' '+nA+'</span>'+
+    ' <span style="color:var(--dim)">(FDR 5% 보정)</span>';
   const byBlk={};
-  res.forEach(r=>{(byBlk[r.base.block]=byBlk[r.base.block]||[]).push(r);});
+  valid.forEach(r=>{(byBlk[r.base.block]=byBlk[r.base.block]||[]).push(r);});
   const bout=[];
   Object.entries(byBlk).forEach(([bn,items])=>{
     const n=items.length;if(n<3)return;
@@ -690,32 +724,40 @@ function runDisp(rows){
   });
   bout.sort((a,b)=>b.mv-a.mv);
   const gdiv=document.getElementById('dgroups');
+  const AR=(DATA.moorSpec&&DATA.moorSpec.allowRadius_m)||2.0;
   bout.slice(0,8).forEach(g=>{
     const isW=g.sigMove&&g.mv>=tw,isA=g.sigMove&&g.mv>=ta;
     if(!g.sigMove&&g.nsig<2)return;
-    const div=document.createElement('div');div.className='grp '+(isA?'alert':isW?'warn':'');
+    const div=document.createElement('div');
+    div.className='grp '+(!designMode&&isA?'alert':(!designMode&&isW?'warn':''));
     div.innerHTML='<b>'+g.bn+'번 블록</b> ('+g.n+'점) — '+
       (g.sigMove?('강체이동 <b>'+g.mv.toFixed(3)+'m</b> 방위 '+g.az.toFixed(0)+'° · 회전 '+g.thdeg.toFixed(2)+'°')
                 :('강체이동 유의하지 않음('+g.mv.toFixed(3)+'m)'))+
       '<br>잔차 RMS '+g.rms.toFixed(3)+'m · 국부변형 의심 '+g.nsig+'점'+
-      (g.mv>((DATA.moorSpec&&DATA.moorSpec.allowRadius_m)||2.0)?' · <b style="color:var(--alert)">설계 허용반경 초과</b>':'')+
+      (g.mv>AR?' · <b style="color:var(--alert)">설계 허용반경('+AR+'m) 초과</b>':'')+
       (g.nsig>=2?' → <b>변형/개별이동 확인 필요</b>':'');
     gdiv.appendChild(div);
   });
   if(!gdiv.children.length)gdiv.innerHTML='<div class="mini">블록 단위 유의 이동·변형 없음</div>';
   const note=document.createElement('div');note.className='mini';
-  note.textContent='※ 유의도(q)는 무변위 가설 대비 통계지표이며 현장 이상 확정이 아닙니다. 경보는 연속 2회 이상 관측·센서 교차확인 후 조치하십시오.';
+  note.textContent='※ q-value는 무변위 가설 검정의 통계지표이며 현장 이상 확률이 아닙니다. 단일 회차 결과로 이상을 확정하지 않으며, 연속 2회 이상 재현·센서/육안 교차확인 후 조치합니다.';
   gdiv.appendChild(note);
-  res.sort((a,b)=>a.q-b.q||b.d-a.d);
   const list=document.getElementById('dlist');
-  res.slice(0,40).forEach(r=>{
-    const c=r.lvl===3?'var(--alert)':r.lvl===2?'var(--warn)':r.lvl===1?'var(--obs)':'var(--ok)';
+  const shown=[...ures].sort((a,b)=>a.q-b.q||b.d-a.d).slice(0,40);
+  shown.forEach(u=>{
+    const c=u.lvl===3?'var(--alert)':u.lvl===2?'var(--warn)':u.lvl===1?'var(--obs)':'var(--ok)';
     const div=document.createElement('div');div.className='row';
-    div.innerHTML='<span>'+r.id+(r.dup?' <span style="color:var(--dim)">(공유)</span>':'')+'</span>'+
-      '<span style="color:'+c+'">'+r.d.toFixed(3)+'m · q='+(r.q<0.001?'<0.001':r.q.toFixed(3))+'</span>';
+    div.innerHTML='<span>'+u.refs.map(r=>r.id).join('/')+(u.refs.length>1?' <span style="color:var(--dim)">(공유)</span>':'')+'</span>'+
+      '<span style="color:'+c+'">'+u.d.toFixed(3)+'m · q='+(u.q<0.001?'<0.001':u.q.toFixed(3))+' · '+LV[u.lvl]+'</span>';
     list.appendChild(div);
   });
-  res.forEach(r=>{
+  conflicts.forEach(cf=>{
+    const div=document.createElement('div');div.className='row';
+    div.innerHTML='<span>'+cf.ids.join(' ↔ ')+'</span><span style="color:var(--alert)">중복관측 불일치 '+cf.spread.toFixed(3)+'m · 판정 제외</span>';
+    list.appendChild(div);
+  });
+  ures.forEach(u=>{
+    const r={base:u.base,cdx:u.cdx,cdy:u.cdy,d:u.d,lvl:u.lvl};
     const h=r.base.kind==='anchor'?demZ(r.base.x,r.base.y)+0.5:1.2+WL();
     const from=W(r.base.x,r.base.y,h);
     const col=r.lvl===3?0xf87171:r.lvl===2?0xfbbf24:r.lvl===1?0xa78bfa:0x4ade80;
@@ -759,19 +801,33 @@ document.getElementById('resetEpoch').addEventListener('click',()=>{
   document.getElementById('resetEpoch').style.display='none';
   toast('설계좌표 기준으로 복원 완료');
 });
-function parseCsvText(text){
-  const rows=[];
-  text.split(/\r?\n/).forEach(ln=>{
+function validateCsv(text){
+  const rows=[],rep={total:0,dup:0,unreg:0,out:0,swapped:false};
+  const lines=text.split(/\r?\n/);
+  let x16=0,x48=0;
+  lines.forEach(ln=>{const p=ln.split(',');if(p.length>=3&&!isNaN(+p[1])){const v=+p[1];
+    if(v>150000&&v<200000)x16++;else if(v>450000&&v<520000)x48++;}});
+  rep.swapped=x16>x48&&x16>2; // X/Y 뒤바뀐 입력 자동 감지(EPSG:5186 축 혼동 방지)
+  const seen=new Set();
+  lines.forEach(ln=>{
     const p=ln.split(',');
-    if(p.length>=3&&p[0].trim().startsWith('B')&&!isNaN(+p[1])&&!isNaN(+p[2]))
-      rows.push({id:p[0].trim(),x:+p[1],y:+p[2]});
+    if(p.length<3||!p[0].trim().startsWith('B'))return;
+    let x=+p[1],y=+p[2];
+    if(isNaN(x)||isNaN(y))return;
+    if(rep.swapped){const t=x;x=y;y=t;}
+    rep.total++;
+    const id=p[0].trim();
+    if(!BASE[id]){rep.unreg++;return;}
+    if(x<487700||x>489600||y<167000||y>170000){rep.out++;return;}
+    if(seen.has(id)){rep.dup++;return;}
+    seen.add(id);rows.push({id,x,y});
   });
-  return rows;
+  return {rows,rep};
 }
 document.getElementById('csvIn').addEventListener('change',e=>{
   const f=e.target.files[0];if(!f)return;
   const rd=new FileReader();
-  rd.onload=()=>runDisp(parseCsvText(rd.result));
+  rd.onload=()=>{const v=validateCsv(rd.result);runDisp(v.rows,v.rep);};
   rd.readAsText(f);e.target.value='';
 });
 document.getElementById('demoBtn').addEventListener('click',()=>{
@@ -858,7 +914,7 @@ function proposeCad(d,label){
   function polyArea(pts){let a=0;for(let i=0;i<pts.length;i++){const p=pts[i],q=pts[(i+1)%pts.length];a+=p[0]*q[1]-q[0]*p[1];}return Math.abs(a)/2;}
   // 블록 외곽선 후보: 중심 150m 이내 + 면적 유사(0.7~1.4배)만 자동승인 대상
   const blkCh=[],blkSkip=[];
-  d.polys.filter(p=>p.pts.length>=4).forEach(p0=>{
+  d.polys.filter(p=>p.pts.length>=4&&(p.closed||Math.hypot(p.pts[0][0]-p.pts[p.pts.length-1][0],p.pts[0][1]-p.pts[p.pts.length-1][1])<3)).forEach(p0=>{
     const pts=p0.pts.map(cv);
     const xs=pts.map(q=>q[0]);
     if(Math.max(...xs)-Math.min(...xs)<20)return;
@@ -875,6 +931,12 @@ function proposeCad(d,label){
       blkCh.push({no:best.no,pts:pts.map(p=>[+p[0].toFixed(2),+p[1].toFixed(2)]),shift:bd,ratio});
     else blkSkip.push({no:best?best.no:null,shift:bd,ratio});
   });
+  // 블록 전역 1:1 — 동일 블록 다중 후보는 중심이동 최소 1건만 채택
+  (function(){const byB={};let dup=0;
+    blkCh.forEach(c=>{if(!byB[c.no]||c.shift<byB[c.no].shift){if(byB[c.no])dup++;byB[c.no]=c;}else dup++;});
+    blkCh.length=0;Object.keys(byB).forEach(k=>blkCh.push(byB[k]));
+    if(dup)blkSkip.push({no:'중복배정',shift:0,ratio:0});
+  })();
   // 앵커 1:1 매칭(기본 10m, 중복 배정 금지)
   const dpts=d.points.map(p=>cv([p.x,p.y]));
   const cand=[];
@@ -1031,17 +1093,25 @@ document.getElementById('pdfAsBase').addEventListener('click',()=>{
   cadSnapshot=JSON.parse(JSON.stringify(DATA));
   document.getElementById('cadUndo').style.display='inline-block';
   let upd=0;
-  pdfPairs.forEach(([x,y])=>{
-    let bid=null,bd=1e18;
-    Object.entries(BASE).forEach(([id,b])=>{const dd=(b.x-x)**2+(b.y-y)**2;if(dd<bd){bd=dd;bid=id;}});
-    if(bid&&bd<10*10){
-      const b=BASE[bid];
-      if(b.kind==='corner'){const blk=DATA.blocks.find(k=>k.no===b.block);const L=bid.split('-')[1];
-        if(blk&&blk.corners[L]){blk.corners[L]=[x,y];upd++;}}
-      else{const blk=DATA.blocks.find(k=>k.no===b.block);
-        if(blk){const arr=blk.anchors[b.side];const i=parseInt(bid.split('-')[2])-1;
-          if(arr&&arr[i]){arr[i]=[x,y];upd++;}}}
-    }
+  // 전역 1:1 최소거리 배정(좌표·기준점 중복 배정 금지)
+  const cands=[];
+  pdfPairs.forEach((pr,pi)=>{
+    Object.entries(BASE).forEach(([id,b])=>{
+      const dd=Math.hypot(b.x-pr[0],b.y-pr[1]);
+      if(dd<10)cands.push({pi,id,dd,x:pr[0],y:pr[1]});
+    });
+  });
+  cands.sort((a,b)=>a.dd-b.dd);
+  const uP=new Set(),uI=new Set();
+  cands.forEach(c=>{
+    if(uP.has(c.pi)||uI.has(c.id))return;
+    uP.add(c.pi);uI.add(c.id);
+    const b=BASE[c.id];
+    const blk=DATA.blocks.find(k=>k.no===b.block);if(!blk)return;
+    if(b.kind==='corner'){const L=c.id.split('-')[1];
+      if(blk.corners[L]){blk.corners[L]=[c.x,c.y];upd++;}}
+    else{const arr=blk.anchors[b.side],i=parseInt(c.id.split('-')[2])-1;
+      if(arr&&arr[i]){arr[i]=[c.x,c.y];upd++;}}
   });
   // 코너 갱신 시 outline 무효화 주의: outline은 유지(절곡점 포함), 코너만 이동한 경우 outline의 해당 점도 동기화
   DATA.blocks.forEach(b=>{
