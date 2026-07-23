@@ -16,13 +16,21 @@
 *{margin:0;padding:0;box-sizing:border-box}
 html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--tx);font-family:'Malgun Gothic','Segoe UI',sans-serif;font-size:13px}
 #c3d{position:absolute;inset:0;touch-action:none}
+#mobTabs{display:none;position:absolute;bottom:44px;left:10px;gap:6px;z-index:29}
+#mobTabs button{background:rgba(20,33,47,.95);border:1px solid var(--line);color:var(--tx);padding:9px 14px;border-radius:8px;font-size:13px;font-family:inherit}
+#mobTabs button.on{border-color:var(--acc);color:var(--acc)}
 @media (max-width:760px){
   .hud{padding:8px 9px;font-size:12px}
-  #left{max-width:76vw;max-height:50vh;overflow-y:auto}
-  #disp{max-width:86vw;max-height:42vh;overflow-y:auto}
-  #info{max-width:80vw;max-height:46vh;overflow-y:auto}
+  #top{padding:6px 10px}
   #top h1{font-size:13px}
+  #top .sub{display:none}
+  #left,#disp{display:none;z-index:28}
+  #left.mopen{display:block;top:52px;left:10px;width:auto;max-width:80vw;max-height:56vh;overflow-y:auto}
+  #disp.mopen{display:block;top:52px;left:10px;right:10px;bottom:auto;width:auto;max-height:56vh;overflow-y:auto}
+  #info{max-width:82vw;max-height:48vh;overflow-y:auto}
+  #legend{display:none}
   #coord span:last-child{display:none}
+  #mobTabs{display:flex}
 }
 .hud{position:absolute;background:rgba(20,33,47,.93);border:1px solid var(--line);border-radius:8px;padding:10px 12px;backdrop-filter:blur(4px)}
 #top{top:10px;left:10px;right:10px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
@@ -177,6 +185,11 @@ input[type=file]{display:none}
   <div><span class="sw" style="background:#3b82c4"></span>발주사 72MW <span class="sw" style="background:#2fa87a;margin-left:8px"></span>농어촌공사 18MW <span class="sw" style="background:#e8b84a;margin-left:8px"></span>앵커</div>
   <div style="margin-top:3px"><span class="sw" style="background:#4ade80"></span>정상 <span class="sw" style="background:#a78bfa"></span>관찰 <span class="sw" style="background:#fbbf24"></span>주의 <span class="sw" style="background:#f87171"></span>경보</div>
   <div style="margin-top:3px">본딩점(줌인): <span class="sw" style="background:#ffd166"></span>①구조물간 <span class="sw" style="background:#ff6b6b"></span>②유닛간 <span class="sw" style="background:#4dd0e1"></span>③발판</div>
+</div>
+
+<div id="mobTabs">
+  <button id="mtLayers">레이어</button>
+  <button id="mtDisp">변위 분석</button>
 </div>
 
 <div class="hud" id="coord">
@@ -735,7 +748,7 @@ function showInfo(b){
 }
 
 /* ============ 변위·통계 분석 (FDR 다중검정 + 강체변환 분해) ============ */
-const APP_VER='v3.8 (2026-07-23)';
+const APP_VER='v3.9 (2026-07-23)';
 let dispObjs=[],lastRows=null;
 const DATA0=JSON.parse(JSON.stringify(DATA));
 function updateVer(){
@@ -1450,6 +1463,15 @@ const LY=(id,grp)=>document.getElementById(id).addEventListener('change',e=>grp.
 LY('lyBlocks',gBlocks);LY('lyPanels',gPanels);LY('lyAnchors',gAnchors);LY('lyMoor',gMoor);
 LY('lyLabels',gLabels);LY('lyGrid',gGrid);LY('lyDisp',gDisp);LY('lyPhotos',gPhotos);LY('lyEss',gEss);LY('lyCable',gCable);
 document.getElementById('lyUnitDetail').addEventListener('change',()=>{lodKey='FORCE';updateLOD();});
+// 모바일 패널 토글 (레이어/변위 — 한 번에 하나만 오버레이)
+[['mtLayers','left'],['mtDisp','disp']].forEach(([bid,pid])=>{
+  document.getElementById(bid).addEventListener('click',()=>{
+    const p=document.getElementById(pid),was=p.classList.contains('mopen');
+    document.querySelectorAll('.mopen').forEach(x=>x.classList.remove('mopen'));
+    document.querySelectorAll('#mobTabs button').forEach(b=>b.classList.remove('on'));
+    if(!was){p.classList.add('mopen');document.getElementById(bid).classList.add('on');}
+  });
+});
 document.getElementById('msg').remove();
 function resize(){renderer.setSize(innerWidth,innerHeight,false);camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();}
 addEventListener('resize',resize);resize();
