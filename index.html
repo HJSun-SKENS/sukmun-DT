@@ -3,12 +3,27 @@
 <head>
 <meta charset="utf-8">
 <title>석문호 수상태양광 90MW — 디지털 트윈 모니터링</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="석문호 DT 데모">
+<meta name="theme-color" content="#0d1520">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 <style>
 :root{--bg:#0d1520;--panel:#14212f;--line:#243447;--tx:#dce8f2;--dim:#8aa0b4;--acc:#38bdf8;--warn:#fbbf24;--alert:#f87171;--ok:#4ade80;--obs:#a78bfa}
 *{margin:0;padding:0;box-sizing:border-box}
 html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--tx);font-family:'Malgun Gothic','Segoe UI',sans-serif;font-size:13px}
-#c3d{position:absolute;inset:0}
+#c3d{position:absolute;inset:0;touch-action:none}
+@media (max-width:760px){
+  .hud{padding:8px 9px;font-size:12px}
+  #left{max-width:76vw;max-height:50vh;overflow-y:auto}
+  #disp{max-width:86vw;max-height:42vh;overflow-y:auto}
+  #info{max-width:80vw;max-height:46vh;overflow-y:auto}
+  #top h1{font-size:13px}
+  #coord span:last-child{display:none}
+}
 .hud{position:absolute;background:rgba(20,33,47,.93);border:1px solid var(--line);border-radius:8px;padding:10px 12px;backdrop-filter:blur(4px)}
 #top{top:10px;left:10px;right:10px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
 #top h1{font-size:15px;font-weight:700;color:var(--acc);margin-right:6px}
@@ -223,20 +238,38 @@ const ctrl={sph:new THREE.Spherical(),drag:0,px:0,py:0,moved:false};
 function syncSph(){ctrl.sph.setFromVector3(camera.position.clone().sub(target));}
 function applySph(){camera.position.copy(target).add(new THREE.Vector3().setFromSpherical(ctrl.sph));camera.lookAt(target);}
 syncSph();applySph();
-canvas.addEventListener('pointerdown',e=>{ctrl.drag=(e.button===2||e.shiftKey)?2:1;ctrl.px=e.clientX;ctrl.py=e.clientY;ctrl.moved=false;canvas.setPointerCapture(e.pointerId);});
-canvas.addEventListener('pointerup',()=>{ctrl.drag=0;});
+const tps=new Map(); // 멀티터치 포인터 (PWA 핀치 줌/두 손가락 이동)
+function panCam(dx,dy){
+  const fwdv=new THREE.Vector3(),right=new THREE.Vector3(),up=new THREE.Vector3(0,1,0);
+  camera.getWorldDirection(fwdv);right.crossVectors(fwdv,up).normalize();
+  const fwd=new THREE.Vector3().crossVectors(up,right).normalize();
+  const s=ctrl.sph.radius*0.0012;
+  target.addScaledVector(right,-dx*s).addScaledVector(fwd,-dy*s);applySph();
+}
+canvas.addEventListener('pointerdown',e=>{
+  tps.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  if(tps.size===2){
+    const [a,b]=[...tps.values()];
+    ctrl.drag=3;ctrl.pd=Math.hypot(a.x-b.x,a.y-b.y);ctrl.pcx=(a.x+b.x)/2;ctrl.pcy=(a.y+b.y)/2;ctrl.moved=true;
+  }else if(tps.size===1){ctrl.drag=(e.button===2||e.shiftKey)?2:1;ctrl.px=e.clientX;ctrl.py=e.clientY;ctrl.moved=false;}
+  canvas.setPointerCapture(e.pointerId);});
+const endPtr=e=>{tps.delete(e.pointerId);if(tps.size<2&&ctrl.drag===3)ctrl.drag=0;if(!tps.size)ctrl.drag=0;};
+canvas.addEventListener('pointerup',endPtr);
+canvas.addEventListener('pointercancel',endPtr);
 canvas.addEventListener('contextmenu',e=>e.preventDefault());
 canvas.addEventListener('pointermove',e=>{
+  if(tps.has(e.pointerId))tps.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  if(ctrl.drag===3&&tps.size===2){
+    const [a,b]=[...tps.values()];
+    const nd=Math.hypot(a.x-b.x,a.y-b.y),ncx=(a.x+b.x)/2,ncy=(a.y+b.y)/2;
+    if(nd>10){ctrl.sph.radius=Math.max(40,Math.min(6000,ctrl.sph.radius*ctrl.pd/nd));ctrl.pd=nd;}
+    panCam(ncx-ctrl.pcx,ncy-ctrl.pcy);ctrl.pcx=ncx;ctrl.pcy=ncy;
+    applySph();return;
+  }
   const dx=e.clientX-ctrl.px,dy=e.clientY-ctrl.py;
   if(ctrl.drag){ctrl.moved=true;}
   if(ctrl.drag===1){ctrl.sph.theta-=dx*0.005;ctrl.sph.phi=Math.max(0.05,Math.min(1.52,ctrl.sph.phi-dy*0.005));applySph();}
-  else if(ctrl.drag===2){
-    const fwdv=new THREE.Vector3(),right=new THREE.Vector3(),up=new THREE.Vector3(0,1,0);
-    camera.getWorldDirection(fwdv);right.crossVectors(fwdv,up).normalize();
-    const fwd=new THREE.Vector3().crossVectors(up,right).normalize();
-    const s=ctrl.sph.radius*0.0012;
-    target.addScaledVector(right,-dx*s).addScaledVector(fwd,-dy*s);applySph();
-  }
+  else if(ctrl.drag===2){panCam(dx,dy);}
   ctrl.px=e.clientX;ctrl.py=e.clientY;onHover(e);
 });
 canvas.addEventListener('wheel',e=>{e.preventDefault();ctrl.sph.radius=Math.max(40,Math.min(6000,ctrl.sph.radius*(e.deltaY>0?1.12:0.89)));applySph();},{passive:false});
@@ -702,7 +735,7 @@ function showInfo(b){
 }
 
 /* ============ 변위·통계 분석 (FDR 다중검정 + 강체변환 분해) ============ */
-const APP_VER='v3.7 (2026-07-20)';
+const APP_VER='v3.8 (2026-07-23)';
 let dispObjs=[],lastRows=null;
 const DATA0=JSON.parse(JSON.stringify(DATA));
 function updateVer(){
